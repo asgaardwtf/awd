@@ -1,131 +1,122 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <nghttp2/nghttp2.h>
 #include <unistd.h>
-#include <fcntl.h>
+#include <pthread.h>
 #include <time.h>
-#include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 
-#define MAX_HEADERS 100
-#define USER_AGENT_FILE "user_agents.txt"
-#define BUFFER_SIZE 2048
+#define HTTP_PORT 80
+#define MAX_REQUEST_SIZE 1024
 
+// Struct to pass arguments to threads
 typedef struct {
-    const char *target;
+    char *target;
     int duration;
-    int concs;
-    int limit;
-    int spoof;
-    const char *country_code;
-} thread_args_t;
+    int concurrency;
+} thread_args;
 
-char user_agents[100][BUFFER_SIZE];
-int user_agent_count = 0;
-int requests_per_second = 0;
+volatile int running = 1;
 
-void load_user_agents() {
-    FILE *file = fopen(USER_AGENT_FILE, "r");
-    if (!file) {
-        perror("Could not open user agent file");
-        exit(EXIT_FAILURE);
+void *make_requests(void *arg) {
+    thread_args *args = (thread_args *) arg;
+    char *target = args->target;
+
+    // Craft a basic GET request
+    char request[MAX_REQUEST_SIZE];
+    snprintf(request, sizeof(request), "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", target);
+
+    struct sockaddr_in server_addr;
+    struct hostent *server;
+
+    server = gethostbyname(target);
+    if (server == NULL) {
+        fprintf(stderr, "Error: No such host\n");
+        return NULL;
     }
 
-    while (fgets(user_agents[user_agent_count], BUFFER_SIZE, file) != NULL) {
-        user_agents[user_agent_count][strcspn(user_agents[user_agent_count], "\n")] = 0; // Remove newline
-        user_agent_count++;
-    }
-    fclose(file);
-}
+    // Fill in server address structure
+    bzero((char *) &server_addr, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    bcopy((char *) server->h_addr, (char *)&server_addr.sin_addr.s_addr, server->h_length);
+    server_addr.sin_port = htons(HTTP_PORT);
 
-void set_headers(nghttp2_hdr *headers, const char *ua, int spoof, const char *country_code) {
-    // Set User-Agent header
-    headers[0] = (nghttp2_hdr){":method", "GET", NGHTTP2_HD_VAL, 0};
-    headers[1] = (nghttp2_hdr){":scheme", "https", NGHTTP2_HD_VAL, 0};
-    headers[2] = (nghttp2_hdr){":path", "/", NGHTTP2_HD_VAL, 0};
-    headers[3] = (nghttp2_hdr){"user-agent", ua, NGHTTP2_HD_VAL, 0};
-
-    if (spoof) {
-        char spoof_header[BUFFER_SIZE];
-        snprintf(spoof_header, sizeof(spoof_header), "X-Geo: %s", country_code);
-        headers[4] = (nghttp2_hdr){"X-Geo", spoof_header, NGHTTP2_HD_VAL, 0};
-    } else {
-        headers[4] = (nghttp2_hdr){"X-Geo", "X-Geo: US", NGHTTP2_HD_VAL, 0}; // Default to US if not spoofing
-    }
-
-    // Add additional headers
-    headers[5] = (nghttp2_hdr){"CACHE_INFO", "127.0.0.1", NGHTTP2_HD_VAL, 0};
-    // Add more headers as necessary
-    headers[6] = (nghttp2_hdr){"CF_CONNECTING_IP", "127.0.0.1", NGHTTP2_HD_VAL, 0};
-    // ... add more headers similarly
-
-    headers[7] = (nghttp2_hdr){NULL, NULL, 0, 0}; // End of headers
-}
-
-void *make_requests(void *args) {
-    thread_args_t *t_args = (thread_args_t *)args;
-
-    time_t end_time = time(NULL) + t_args->duration;
-    nghttp2_session *session;
-    nghttp2_session_callbacks *callbacks;
-
-    nghttp2_session_callbacks_new(&callbacks);
-    nghttp2_session_client_new(&session, callbacks, NULL);
-    nghttp2_session_callbacks_del(callbacks);
-
-    while (time(NULL) < end_time) {
-        nghttp2_hdr headers[MAX_HEADERS];
-        const char *ua = user_agents[rand() % user_agent_count];
-
-        set_headers(headers, ua, t_args->spoof, t_args->country_code);
-
-        if (nghttp2_submit_request(session, NULL, headers, NULL, NULL, NULL) != 0) {
-            fprintf(stderr, "Failed to submit request\n");
-            break;
+    while (running) {
+        // Create a socket
+        int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) {
+            perror("Error opening socket");
+            continue;
         }
 
-        if (requests_per_second > 0) {
-            usleep(1000000 / requests_per_second); // Limit the rate of requests
+        // Connect to the server
+        if (connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+            perror("Error connecting to the server");
+            close(sockfd);
+            continue;
         }
 
-        nghttp2_session_send(session);
-        nghttp2_session_recv(session);
+        // Send the HTTP GET request
+        if (send(sockfd, request, strlen(request), 0) < 0) {
+            perror("Error sending request");
+            close(sockfd);
+            continue;
+        }
+
+        // Receive the response
+        char response[4096];
+        bzero(response, 4096);
+        recv(sockfd, response, 4095, 0);
+
+        // Close the socket after receiving response
+        close(sockfd);
     }
 
-    nghttp2_session_del(session);
     return NULL;
 }
 
-int main(int argc, char *argv[]) {
-    if (argc < 7) {
-        fprintf(stderr, "Usage: %s <target> <duration> <concs> <limit> <ua> <spoof y/n> <spoof-country>\n", argv[0]);
-        return EXIT_FAILURE;
+void start_stress_test(char *target, int duration, int concurrency) {
+    pthread_t threads[concurrency];
+    thread_args args = {target, duration, concurrency};
+
+    // Start the timer
+    time_t start_time = time(NULL);
+
+    // Create threads to make concurrent requests
+    for (int i = 0; i < concurrency; i++) {
+        pthread_create(&threads[i], NULL, make_requests, (void *)&args);
     }
 
-    const char *target = argv[1];
-    int duration = atoi(argv[2]);
-    int concs = atoi(argv[3]);
-    requests_per_second = atoi(argv[4]);
-    const char *ua = argv[5];
-    int spoof = (argv[6][0] == 'y') ? 1 : 0;
-    const char *country_code = argv[7];
-
-    load_user_agents();
-
-    pthread_t *threads = malloc(concs * sizeof(pthread_t));
-    thread_args_t *t_args = malloc(concs * sizeof(thread_args_t));
-
-    for (int i = 0; i < concs; i++) {
-        t_args[i] = (thread_args_t){target, duration, concs, requests_per_second, spoof, country_code};
-        pthread_create(&threads[i], NULL, make_requests, &t_args[i]);
+    // Wait for the duration of the test
+    while (time(NULL) - start_time < duration) {
+        sleep(1);
     }
 
-    for (int i = 0; i < concs; i++) {
+    // Stop all threads
+    running = 0;
+
+    // Wait for all threads to finish
+    for (int i = 0; i < concurrency; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    free(threads);
-    free(t_args);
-    return EXIT_SUCCESS;
+    printf("Stress test finished!\n");
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <target> <duration> <concurrency>\n", argv[0]);
+        exit(1);
+    }
+
+    char *target = argv[1];
+    int duration = atoi(argv[2]);
+    int concurrency = atoi(argv[3]);
+
+    start_stress_test(target, duration, concurrency);
+
+    return 0;
 }
