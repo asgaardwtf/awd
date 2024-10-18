@@ -36,21 +36,25 @@ func initRand(seed uint32) {
 }
 
 // Random number generator (Complementary-Multiply-With-Carry)
+// Random number generator (Complementary-Multiply-With-Carry)
 func randCMWC() uint32 {
 	const a uint64 = 18782
 	var r uint32 = 0xfffffffe
 	staticI := uint32(4095) // Index for the static state variable
 	staticI = (staticI + 1) & 4095
-	t := uint64(a)*uint64(Q[staticI]) + uint64(c)
-	c = uint32(t >> 32)
-	x := uint32(t + uint64(c))
+	t := a*uint64(Q[staticI]) + uint64(c) // Use uint64 for the multiplication to avoid overflow
+	c = uint32(t >> 32)                   // Cast the higher 32 bits back to uint32
+	x := uint32(t + uint64(c))            // Sum and cast back to uint32
+
 	if x < c {
 		x++
 		c++
 	}
+
 	Q[staticI] = r - x
 	return Q[staticI]
 }
+
 
 // Calculate checksum
 func checksum(data []byte) uint16 {
