@@ -1,86 +1,47 @@
-import undetected_chromedriver.v2 as uc
-from fake_useragent import UserAgent
-import threading
 import argparse
+from undetected_chromedriver.v2 import Chrome, ChromeOptions
+import threading
+from fake_useragent import UserAgent
 import random
-import time
-from selenium.webdriver.common.by import By
 
-# Function to set custom headers
-def add_custom_headers(driver, custom_headers):
-    for key, value in custom_headers.items():
-        driver.execute_cdp_cmd('Network.setExtraHTTPHeaders', {'headers': {key: value}})
-
-# Function to view a webpage with random user-agent and additional headers
-def view_page(url, headers):
-    options = uc.ChromeOptions()
-
-    # Generate a random user-agent
+def view_url(url):
+    options = ChromeOptions()
     ua = UserAgent()
-    user_agent = ua.random
-    options.add_argument(f'user-agent={user_agent}')
-    
-    # Disable WebRTC to avoid detection
-    options.add_argument('--disable-webrtc')
+    options.add_argument(f"user-agent={ua.random}")
+    options.add_argument("start-maximized")
+    options.add_argument("disable-infobars")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-browser-side-navigation")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-features=VizDisplayCompositor")
+    options.add_argument(f"--window-position={random.randint(0,1920)},{random.randint(0,1080)}")
+    options.add_argument(f"--user-agent={ua.random}")
 
-    # Start undetected Chrome with custom options
-    driver = uc.Chrome(options=options)
+    driver = Chrome(options=options)
+    driver.header_overrides = {"X-Geo": "DK"}
+    driver.get(url)
+    driver.quit()
 
-    # Add custom headers
-    add_custom_headers(driver, headers)
-
-    try:
-        # Access the page
-        driver.get(url)
-        print(f"Successfully accessed {url} with User-Agent: {user_agent}")
-
-        # Simulate browsing delay
-        time.sleep(random.randint(5, 10))
-
-        # Example of finding an element (you can change this based on your needs)
-        # driver.find_element(By.TAG_NAME, 'body')
-
-    except Exception as e:
-        print(f"Error accessing {url}: {e}")
-
-    finally:
-        driver.quit()
-
-# Threading function to handle concurrency
-def run_threads(urls, num_threads, headers):
-    threads = []
-    for url in urls:
-        # Create a thread for each URL
-        t = threading.Thread(target=view_page, args=(url, headers))
-        threads.append(t)
-
-        if len(threads) >= num_threads:
-            # Start the threads
-            for thread in threads:
-                thread.start()
-            # Wait for all threads to finish
-            for thread in threads:
-                thread.join()
-            # Clear thread list for the next batch
-            threads = []
-
-# Main function for argument parsing and running the program
 def main():
-    parser = argparse.ArgumentParser(description="Web Viewer using undetected-chromedriver")
-    parser.add_argument('-u', '--urls', nargs='+', required=True, help='List of URLs to visit')
-    parser.add_argument('-t', '--threads', type=int, default=5, help='Number of concurrent threads')
-    parser.add_argument('-c', '--custom-headers', nargs='*', help='Custom headers in key:value format', default=[])
-
+    parser = argparse.ArgumentParser(description='Automatically view URLs with specific headers and concurrency')
+    parser.add_argument('--concurrency', type=int, default=2, help='Number of concurrent threads')
+    parser.add_argument('--url', type=str, required=True, help='URL to view')
     args = parser.parse_args()
 
-    # Prepare custom headers dictionary
-    headers = {}
-    for header in args.custom_headers:
-        key, value = header.split(":")
-        headers[key.strip()] = value.strip()
+    urls = [args.url] * args.concurrency
 
-    # Run the threads to visit each URL concurrently
-    run_threads(args.urls, args.threads, headers)
+    threads = []
+    for url in urls:
+        t = threading.Thread(target=view_url, args=(url,))
+        threads.append(t)
+        t.start()
 
-if __name__ == "__main__":
+    for t in threads:
+        t.join()
+
+if __name__ == '__main__':
     main()
